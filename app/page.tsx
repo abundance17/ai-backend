@@ -1,20 +1,33 @@
-export default function HomePage() {
+export default function Home() {
   return (
-    <main className="min-h-screen flex flex-col items-center justify-center bg-gray-100 text-center p-8">
-      <h1 className="text-4xl font-bold mb-4 text-gray-800">
-        🚀 AI Avatars
+    <main
+      style={{
+        display: 'flex',
+        height: '100vh',
+        alignItems: 'center',
+        justifyContent: 'center',
+        flexDirection: 'column',
+        fontFamily: 'sans-serif',
+      }}
+    >
+      <h1 style={{ fontSize: '2.5rem', marginBottom: '1rem' }}>
+        🚀 Next.js работает!
       </h1>
-      <p className="text-lg text-gray-600 mb-6">
-        Добро пожаловать! Всё готово для генерации аватаров.
-      </p>
+      <p style={{ color: '#555' }}>Добро пожаловать в твой AI Backend 👇</p>
       <a
         href="/upload"
-        className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition"
+        style={{
+          marginTop: '2rem',
+          background: 'black',
+          color: 'white',
+          padding: '10px 20px',
+          borderRadius: '8px',
+          textDecoration: 'none',
+        }}
       >
         Перейти к загрузке
       </a>
     </main>
   );
 }
-
 
