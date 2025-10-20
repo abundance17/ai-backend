@@ -1,53 +1,58 @@
-// app/generate/page.tsx
 "use client";
-
 import { useState } from "react";
 
 export default function GeneratePage() {
+  const [prompt, setPrompt] = useState("");
+  const [image, setImage] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [imageUrl, setImageUrl] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
 
   const handleGenerate = async () => {
     setLoading(true);
-    setError(null);
-    setImageUrl(null);
+    setImage(null);
 
-    try {
-      const res = await fetch("/api/generate", { method: "POST" });
-      if (!res.ok) throw new Error("Ошибка при генерации");
-      const data = await res.json();
-      setImageUrl(data.imageUrl);
-    } catch (err: any) {
-      setError(err.message);
-    } finally {
-      setLoading(false);
-    }
+    const res = await fetch("/api/generate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt }),
+    });
+
+    const data = await res.json();
+    setLoading(false);
+
+    if (data?.output?.[0]) setImage(data.output[0]);
+    else alert("Не удалось сгенерировать изображение 😢");
   };
 
   return (
-    <main className="flex flex-col items-center justify-center min-h-screen bg-white text-black">
-      <h1 className="text-4xl font-bold mb-6">🎨 Генерация AI-Аватара</h1>
-      <button
-        onClick={handleGenerate}
-        disabled={loading}
-        className="px-6 py-3 bg-black text-white rounded-lg hover:bg-gray-800 transition"
-      >
-        {loading ? "⏳ Генерация..." : "🚀 Создать"}
-      </button>
+    <div className="flex flex-col items-center justify-center min-h-screen p-8">
+      <h1 className="text-3xl font-bold mb-6">🎨 Генерация AI-Аватара</h1>
 
-      {error && <p className="text-red-500 mt-4">{error}</p>}
+      <div className="flex space-x-2 mb-6">
+        <input
+          value={prompt}
+          onChange={(e) => setPrompt(e.target.value)}
+          className="border rounded-lg px-4 py-2 w-80"
+          placeholder="Опиши свой аватар..."
+        />
+        <button
+          onClick={handleGenerate}
+          disabled={loading}
+          className="bg-black text-white px-4 py-2 rounded-lg"
+        >
+          {loading ? "Генерируется..." : "Создать"}
+        </button>
+      </div>
 
-      {imageUrl && (
+      {image && (
         <div className="mt-6">
           <img
-            src={imageUrl}
-            alt="Generated avatar"
-            className="w-64 h-64 rounded-xl shadow-lg"
+            src={image}
+            alt="AI Avatar"
+            className="w-64 h-64 rounded-2xl shadow-lg border"
           />
         </div>
       )}
-    </main>
+    </div>
   );
 }
 
