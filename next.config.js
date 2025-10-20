@@ -12,7 +12,7 @@ const nextConfig = {
       },
       {
         protocol: "https",
-        hostname: "**.replicate.delivery", // ✅ на всякий случай поддомены
+        hostname: "**.replicate.delivery", // ✅ поддомены replicate
       },
       {
         protocol: "https",
@@ -21,12 +21,10 @@ const nextConfig = {
     ],
   },
 
-  // 🔥 Разрешаем Cloudflare туннель как доверенный origin (чтобы /login работал)
+  // ✅ Убираем устаревшее experimental.allowedDevOrigins
+  reactStrictMode: true,
   experimental: {
-    allowedDevOrigins: [
-      "http://localhost:3000",
-      "https://bright-keeps-pads-accidents.trycloudflare.com", // 👈 твой текущий туннель
-    ],
+    serverActions: true, // оставляем только реально поддерживаемую опцию
   },
 };
 
