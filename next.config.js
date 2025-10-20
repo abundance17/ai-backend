@@ -4,27 +4,21 @@ const nextConfig = {
     remotePatterns: [
       {
         protocol: "https",
-        hostname: "**.supabase.co", // ✅ Разрешаем все поддомены supabase
+        hostname: "**.supabase.co",
       },
       {
         protocol: "https",
-        hostname: "replicate.delivery", // ✅ Разрешаем replicate
+        hostname: "replicate.delivery",
       },
       {
         protocol: "https",
-        hostname: "**.replicate.delivery", // ✅ поддомены replicate
+        hostname: "**.replicate.delivery",
       },
       {
         protocol: "https",
-        hostname: "**.trycloudflare.com", // ✅ Разрешаем Cloudflare туннели
+        hostname: "**.trycloudflare.com",
       },
     ],
-  },
-
-  // ✅ Убираем устаревшее experimental.allowedDevOrigins
-  reactStrictMode: true,
-  experimental: {
-    serverActions: true, // оставляем только реально поддерживаемую опцию
   },
 };
 
