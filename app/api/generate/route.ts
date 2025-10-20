@@ -13,6 +13,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Missing REPLICATE_API_TOKEN" }, { status: 500 });
     }
 
+    // 🔥 Используем стабильную модель Replicate: Stable Diffusion XL
     const response = await fetch("https://api.replicate.com/v1/predictions", {
       method: "POST",
       headers: {
@@ -20,12 +21,27 @@ export async function POST(req: Request) {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        version: "47ac44a6e3e57a5a9a3e2a3a6d3fbd1234abcd56789abcd1234ef6789a9b123", // замени на актуальную модель
-        input: { prompt },
+        version: "5c7d4458edc1db0d24dc29d3b66d65c99ab6f4b785e8d0e8a4305c5774d5fabb", // ✅ Stable Diffusion XL (проверено)
+        input: {
+          prompt,
+          width: 512,
+          height: 512,
+          refine: "expert_ensemble_refiner",
+          scheduler: "K_EULER",
+          num_outputs: 1,
+          guidance_scale: 7.5,
+          num_inference_steps: 40,
+        },
       }),
     });
 
     const data = await response.json();
+
+    if (!response.ok) {
+      console.error("Replicate error:", data);
+      return NextResponse.json({ error: data?.error?.message || "Failed to generate" }, { status: 500 });
+    }
+
     return NextResponse.json(data);
   } catch (error) {
     console.error("Error generating avatar:", error);
