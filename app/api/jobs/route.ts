@@ -31,7 +31,7 @@ export async function POST(req: Request) {
     if (error || !job) throw new Error(error?.message || 'Failed to create job');
 
     // 2) Запускаем Replicate
-    const webhook = `${process.env.NEXT_PUBLIC_BASE_URL}/api/webhooks/replicate`;
+    const webhook = `${process.env.NEXT_PUBLIC_APP_URL}/api/webhooks/replicate`;
     const prediction = await createPrediction({
       tier: t,
       webhook,
