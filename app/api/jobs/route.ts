@@ -1,57 +1,65 @@
-import { NextResponse } from 'next/server';
-import { supabase } from '@/lib/supabaseServer';
-import { createPrediction } from '@/lib/replicate';
-import type { Tier } from '@/lib/replicate';
+import { NextResponse } from "next/server";
+import { createClient } from "@supabase/supabase-js";
+import { createPrediction } from "@/lib/replicate";
+
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!
+);
 
 export async function POST(req: Request) {
   try {
-    const { userId = null, tier, prompt, negativePrompt, numOutputs = 8 } = await req.json();
+    const { tier: t, prompt, negativePrompt, numOutputs } = await req.json();
 
-    if (!tier || !prompt) {
-      return NextResponse.json({ error: 'Bad input' }, { status: 400 });
-    }
-    const t: Tier = tier;
-    if (!['fast','standard','pro'].includes(t)) {
-      return NextResponse.json({ error: 'Bad tier' }, { status: 400 });
-    }
-
-    // 1) Создаём запись job
+    // 1️⃣ Создаём запись в таблице jobs
     const { data: job, error } = await supabase
-      .from('jobs')
+      .from("jobs")
       .insert({
-        user_id: userId,
         tier: t,
         prompt,
-        negative_prompt: negativePrompt || null,
-        status: 'queued',
-        total: Number(numOutputs) || 8,
+        negative_prompt: negativePrompt,
+        num_outputs: numOutputs,
+        status: "starting",
       })
       .select()
       .single();
-    if (error || !job) throw new Error(error?.message || 'Failed to create job');
 
-    // 2) Запускаем Replicate
+    if (error || !job) throw new Error(error?.message || "Failed to insert job");
+
+    // 2️⃣ Формируем webhook URL
     const webhook = `${process.env.NEXT_PUBLIC_APP_URL}/api/webhooks/replicate`;
+
+    // 3️⃣ Запускаем prediction в Replicate
     const prediction = await createPrediction({
       tier: t,
       webhook,
       input: {
+        jobId: job.id, // 👈 вот откуда — из вставленной строки Supabase
         prompt,
-        negative_prompt: negativePrompt || '',
+        negative_prompt: negativePrompt || "",
         num_outputs: Number(numOutputs) || 8,
         width: 1024,
         height: 1024,
       },
     });
 
+    // 4️⃣ Сохраняем id и статус prediction в Supabase
     await supabase
-      .from('jobs')
-      .update({ prediction_id: prediction.id, status: prediction.status })
-      .eq('id', job.id);
+      .from("jobs")
+      .update({
+        prediction_id: prediction.id,
+        status: prediction.status,
+      })
+      .eq("id", job.id);
 
+    // 5️⃣ Отдаём jobId фронту
     return NextResponse.json({ ok: true, jobId: job.id });
   } catch (e: any) {
-    return NextResponse.json({ error: e.message || 'Server error' }, { status: 500 });
+    console.error("🚨 Job creation error:", e);
+    return NextResponse.json(
+      { error: e.message || "Server error" },
+      { status: 500 }
+    );
   }
 }
 

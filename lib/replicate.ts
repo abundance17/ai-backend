@@ -1,41 +1,44 @@
 // lib/replicate.ts
-export type Tier = 'fast' | 'standard' | 'pro';
+import Replicate from "replicate";
 
-const VERSION_BY_TIER: Record<Tier, string> = {
-  fast: process.env.REPLICATE_VERSION_FAST!,        // format: model:version-hash
-  standard: process.env.REPLICATE_VERSION_STANDARD!,
-  pro: process.env.REPLICATE_VERSION_PRO!,          // может быть просто "black-forest-labs/flux-1.1-pro"
-};
+const replicate = new Replicate({
+  auth: process.env.REPLICATE_API_TOKEN!,
+});
 
-export async function createPrediction(opts: {
-  tier: Tier;
-  input: Record<string, any>;
+export async function createPrediction({
+  tier,
+  webhook,
+  input,
+}: {
+  tier: "fast" | "standard" | "pro";
   webhook: string;
+  input: Record<string, any>;
 }) {
-  const version = VERSION_BY_TIER[opts.tier];
-  if (!version) throw new Error(`Missing version for tier ${opts.tier}`);
+  const versionKey = {
+    fast: process.env.REPLICATE_VERSION_FAST!,
+    standard: process.env.REPLICATE_VERSION_STANDARD!,
+    pro: process.env.REPLICATE_VERSION_PRO!,
+  }[tier];
 
-  const resp = await fetch('https://api.replicate.com/v1/predictions', {
-    method: 'POST',
-    headers: {
-      Authorization: `Token ${process.env.REPLICATE_API_TOKEN}`,
-      'Content-Type': 'application/json',
-      'Accept': 'application/json',
-    },
-    body: JSON.stringify({
-      version,
-      input: opts.input,
-      webhook: opts.webhook,
-      webhook_events_filter: ['completed'],
-    }),
-    // Replicate может отвечать медленнее, дадим запас
-    next: { revalidate: 0 },
+  if (!versionKey) throw new Error(`Missing model version for tier ${tier}`);
+
+  // передаём jobId, чтобы webhook мог понять, к какому job относится
+  input.jobId = input.jobId || crypto.randomUUID();
+
+  console.log("🚀 Creating prediction with:", { tier, versionKey, input, webhook });
+
+  const prediction = await replicate.predictions.create({
+    version: versionKey,
+    input,
+    webhook,
+    webhook_events_filter: ["completed"],
   });
 
-  const data = await resp.json();
-  if (!resp.ok) {
-    throw new Error(data?.error?.message || 'Replicate error');
+  if (!prediction || prediction.error) {
+    console.error("Replicate prediction error:", prediction);
+    throw new Error("Replicate error");
   }
-  return data as { id: string; status: string };
+
+  return prediction;
 }
 
