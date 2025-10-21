@@ -1,35 +1,49 @@
-import { NextResponse } from 'next/server';
-import { supabase } from '@/lib/supabaseServer';
+import { NextResponse } from "next/server";
+import { createClient } from "@supabase/supabase-js";
+
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!
+);
 
 export async function POST(req: Request) {
   try {
-    const payload = await req.json(); // { id, status, output?: string[] }
-    const predictionId = payload?.id as string | undefined;
-    if (!predictionId) return NextResponse.json({ ok: true });
+    const body = await req.json();
+    console.log("🪄 Webhook received:", body);
 
-    // Находим job
-    const { data: jobs } = await supabase
-      .from('jobs')
-      .select('id')
-      .eq('prediction_id', predictionId)
-      .limit(1);
+    const jobId = body?.input?.jobId;
+    const status = body?.status;
+    const output = body?.output;
 
-    const job = jobs?.[0];
-    if (!job) return NextResponse.json({ ok: true });
+    if (!jobId) {
+      console.error("❌ Missing jobId in webhook payload:", body);
+      return NextResponse.json({ error: "Missing jobId" }, { status: 400 });
+    }
 
-    if (payload.status === 'succeeded' && Array.isArray(payload.output)) {
-      const rows = payload.output.map((url: string) => ({ job_id: job.id, url }));
-      if (rows.length) await supabase.from('images').insert(rows);
-      await supabase.from('jobs').update({ status: 'succeeded', done: rows.length }).eq('id', job.id);
-    } else if (payload.status === 'failed') {
-      await supabase.from('jobs').update({ status: 'failed', error: payload?.error || 'failed' }).eq('id', job.id);
-    } else {
-      await supabase.from('jobs').update({ status: payload.status }).eq('id', job.id);
+    // 1️⃣ Обновляем статус job
+    await supabase
+      .from("jobs")
+      .update({
+        status,
+        output,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", jobId);
+
+    // 2️⃣ Если есть картинки — сохраняем в таблицу images
+    if (status === "succeeded" && Array.isArray(output)) {
+      for (const url of output) {
+        await supabase.from("images").insert({
+          job_id: jobId,
+          url,
+        });
+      }
     }
 
     return NextResponse.json({ ok: true });
   } catch (e: any) {
-    return NextResponse.json({ error: e.message || 'webhook error' }, { status: 200 });
+    console.error("🔥 Webhook error:", e);
+    return NextResponse.json({ error: e.message }, { status: 500 });
   }
 }
 
