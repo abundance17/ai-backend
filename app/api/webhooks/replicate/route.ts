@@ -9,41 +9,49 @@ const supabase = createClient(
 export async function POST(req: Request) {
   try {
     const body = await req.json();
-    console.log("🪄 Webhook received:", body);
+    const { id, status, output, input, error } = body;
 
-    const jobId = body?.input?.jobId;
-    const status = body?.status;
-    const output = body?.output;
+    console.log("📩 Webhook received:", { id, status, error });
 
+    // Проверим, есть ли jobId (мы передаём его в input)
+    const jobId = input?.jobId;
     if (!jobId) {
-      console.error("❌ Missing jobId in webhook payload:", body);
+      console.error("❌ Missing jobId in Replicate webhook input");
       return NextResponse.json({ error: "Missing jobId" }, { status: 400 });
     }
 
-    // 1️⃣ Обновляем статус job
-    await supabase
-      .from("jobs")
-      .update({
-        status,
-        output,
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", jobId);
+    // Обновляем задачу в Supabase
+    const updateData: Record<string, any> = {
+      status,
+      updated_at: new Date().toISOString(),
+    };
 
-    // 2️⃣ Если есть картинки — сохраняем в таблицу images
-    if (status === "succeeded" && Array.isArray(output)) {
-      for (const url of output) {
-        await supabase.from("images").insert({
-          job_id: jobId,
-          url,
-        });
-      }
+    // Если пришёл результат — добавляем его
+    if (output && Array.isArray(output)) {
+      updateData.output_urls = output;
     }
 
+    // Если есть ошибка — тоже сохраняем
+    if (error) {
+      updateData.error_message = typeof error === "string" ? error : JSON.stringify(error);
+    }
+
+    const { error: supabaseError } = await supabase
+      .from("jobs")
+      .update(updateData)
+      .eq("id", jobId);
+
+    if (supabaseError) {
+      console.error("❌ Supabase update error:", supabaseError);
+      return NextResponse.json({ error: "Database update failed" }, { status: 500 });
+    }
+
+    console.log("✅ Job updated successfully:", { jobId, status });
+
     return NextResponse.json({ ok: true });
-  } catch (e: any) {
-    console.error("🔥 Webhook error:", e);
-    return NextResponse.json({ error: e.message }, { status: 500 });
+  } catch (err: any) {
+    console.error("❌ Webhook handler error:", err);
+    return NextResponse.json({ error: err.message || "Webhook processing error" }, { status: 500 });
   }
 }
 
