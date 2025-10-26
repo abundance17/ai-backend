@@ -1,77 +1,139 @@
-import { NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
-import { createPrediction } from "@/lib/replicate"; // убедись, что этот импорт указывает на твой helper
+// app/api/jobs/route.ts
+import { NextResponse } from 'next/server';
+import { supabase } from '@/lib/supabaseServer';
+import { createPrediction } from '@/lib/replicate';
 
-// Создаём Supabase client с ключами
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-);
+export const runtime = 'nodejs'; // явный runtime
+export const dynamic = 'force-dynamic'; // чтобы Next не кешировал
 
+const RATE_WINDOW_MS = 3000;
+
+// --- GET /api/jobs?userId=... ---
+export async function GET(req: Request) {
+  const { searchParams } = new URL(req.url);
+  const userId = searchParams.get('userId');
+  if (!userId) {
+    return NextResponse.json({ ok: false, error: 'Missing userId' }, { status: 400 });
+  }
+
+  const { data: jobs, error: jobsErr } = await supabase
+    .from('jobs')
+    .select('id, status, done, total, prompt, tier, created_at')
+    .eq('user_id', userId)
+    .order('created_at', { ascending: false })
+    .limit(50);
+
+  if (jobsErr) {
+    return NextResponse.json({ ok: false, error: jobsErr.message }, { status: 500 });
+  }
+
+  if (!jobs || !jobs.length) {
+    return NextResponse.json({ ok: true, items: [] });
+  }
+
+  const ids = jobs.map(j => j.id);
+  const { data: imgs, error: imgsErr } = await supabase
+    .from('images')
+    .select('job_id, url, created_at')
+    .in('job_id', ids)
+    .order('created_at', { ascending: true });
+
+  if (imgsErr) {
+    return NextResponse.json({ ok: false, error: imgsErr.message }, { status: 500 });
+  }
+
+  const firstByJob = new Map<string, string>();
+  imgs?.forEach(i => {
+    if (!firstByJob.has(i.job_id)) firstByJob.set(i.job_id, i.url);
+  });
+
+  const items = jobs.map(j => ({
+    id: j.id,
+    status: j.status,
+    done: j.done ?? 0,
+    total: j.total ?? 0,
+    prompt: j.prompt,
+    tier: j.tier,
+    createdAt: j.created_at,
+    firstUrl: firstByJob.get(j.id) || null,
+  }));
+
+  return NextResponse.json({ ok: true, items });
+}
+
+// --- POST /api/jobs ---
 export async function POST(req: Request) {
-  try {
-    const body = await req.json();
-    const { prompt, negativePrompt, numOutputs, tier } = body;
+  const { userId, tier, prompt, negativePrompt, numOutputs = 8 } = await req.json();
+  if (!userId || !tier || !prompt) {
+    return NextResponse.json({ error: 'Bad input' }, { status: 400 });
+  }
 
-    // Проверка переменных окружения
-    if (!process.env.NEXT_PUBLIC_BASE_URL) {
-      console.error("❌ Missing NEXT_PUBLIC_BASE_URL");
+  const { data: lastJobs, error: lastErr } = await supabase
+    .from('jobs')
+    .select('id, created_at')
+    .eq('user_id', userId)
+    .order('created_at', { ascending: false })
+    .limit(1);
+
+  if (!lastErr && lastJobs && lastJobs.length) {
+    const last = lastJobs[0];
+    const lastAt = new Date((last as any).created_at as string).getTime();
+    const now = Date.now();
+    if (now - lastAt < RATE_WINDOW_MS) {
+      const retryAfter = Math.ceil((RATE_WINDOW_MS - (now - lastAt)) / 1000);
       return NextResponse.json(
-        { error: "Missing NEXT_PUBLIC_BASE_URL in environment variables" },
-        { status: 500 }
+        { error: 'Too many requests. Try again shortly.' },
+        { status: 429, headers: { 'Retry-After': String(retryAfter) } }
       );
     }
-
-    // Создаём запись задачи в Supabase
-    const { data: job, error: jobError } = await supabase
-      .from("jobs")
-      .insert([{ prompt, negative_prompt: negativePrompt || "", status: "created" }])
-      .select()
-      .single();
-
-    if (jobError || !job) {
-      console.error("❌ Supabase insert error:", jobError);
-      return NextResponse.json({ error: "Failed to create job" }, { status: 500 });
-    }
-
-    // Формируем webhook URL
-    const webhook = `${process.env.NEXT_PUBLIC_BASE_URL}/api/webhooks/replicate`;
-    console.log("✅ Webhook URL:", webhook);
-
-    // Отправляем prediction в Replicate
-    const prediction = await createPrediction({
-      tier,
-      webhook,
-      input: {
-        jobId: job.id, // 👈 важно — чтобы webhook знал, какую запись обновить
-        prompt,
-        negative_prompt: negativePrompt || "",
-        num_outputs: Number(numOutputs) || 1,
-        width: 1024,
-        height: 1024,
-      },
-    });
-
-    if (!prediction || !prediction.id) {
-      console.error("❌ Replicate prediction creation failed");
-      return NextResponse.json({ error: "Replicate prediction failed" }, { status: 500 });
-    }
-
-    // Обновляем задачу в Supabase
-    await supabase
-      .from("jobs")
-      .update({ prediction_id: prediction.id, status: prediction.status })
-      .eq("id", job.id);
-
-    console.log("✅ Job created successfully:", job.id);
-
-    return NextResponse.json({ ok: true, jobId: job.id });
-  } catch (error: any) {
-    console.error("❌ API Error:", error);
-    return NextResponse.json(
-      { error: error.message || "Server error" },
-      { status: 500 }
-    );
   }
+
+  const { data: job, error } = await supabase
+    .from('jobs')
+    .insert({
+      user_id: userId,
+      tier,
+      prompt,
+      negative_prompt: negativePrompt || '',
+      status: 'queued',
+      total: Number(numOutputs) || 8,
+    })
+    .select()
+    .single();
+
+  if (error || !job) {
+    return NextResponse.json({ error: error?.message || 'DB error' }, { status: 500 });
+  }
+
+  const baseUrl =
+    process.env.NEXT_PUBLIC_BASE_URL ||
+    (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'http://localhost:3000');
+
+  const webhook = `${baseUrl}/api/webhooks/replicate`;
+
+  const prediction = await createPrediction({
+    tier: tier as 'fast' | 'standard' | 'pro',
+    webhook,
+    input: {
+      jobId: (job as any).id,
+      prompt,
+      negative_prompt: negativePrompt || '',
+      num_outputs: Number(numOutputs) || 8,
+      width: 1024,
+      height: 1024,
+    },
+  });
+
+  await supabase
+    .from('jobs')
+    .update({ prediction_id: (prediction as any).id, status: (prediction as any).status })
+    .eq('id', (job as any).id);
+
+  return NextResponse.json({ ok: true, jobId: (job as any).id });
+}
+
+// --- OPTIONS (на всякий случай, чтобы Vercel не отдавал 405 при preflight) ---
+export async function OPTIONS() {
+  return NextResponse.json({}, { status: 204 });
 }
 
