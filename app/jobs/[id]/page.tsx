@@ -1,99 +1,68 @@
-'use client';
+// app/jobs/[id]/page.tsx
+import 'server-only';
 
+type Params = { id: string };
+
+// В Next 15 серверный Page получает params как Promise
+export default async function JobPage({ params }: { params: Promise<Params> }) {
+  const { id } = await params;
+
+  // Рендерим минимальный скелет и доверим клиентскому компоненту опрос API
+  return (
+    <main className="max-w-4xl mx-auto p-6">
+      <h1 className="text-3xl font-bold mb-2">Job status: loading…</h1>
+      <p>Processing...</p>
+      {/* Клиентский виджет ниже подхватит id и начнёт пуллить */}
+      <ClientJobView id={id} />
+    </main>
+  );
+}
+
+// Клиентский компонент, чтобы не трогать серверную типизацию
+'use client';
 import { useEffect, useState } from 'react';
 
-type Job = {
-  id: string;
-  status: string;
-  error?: string | null;
-  done?: number | null;
-};
-
-type ImageRow = { url: string };
-
-export default function JobPage({ params }: { params: Promise<{ id: string }> }) {
-  const [job, setJob] = useState<Job | null>(null);
-  const [images, setImages] = useState<ImageRow[]>([]);
+function ClientJobView({ id }: { id: string }) {
+  const [state, setState] = useState<any>(null);
   const [err, setErr] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    let mounted = true;
-    (async () => {
+    let t: any;
+    const tick = async () => {
       try {
-        const { id } = await params; // Next 15: params — Promise
-        // без строгой uuid-валидации
-        if (!id || typeof id !== 'string') throw new Error('Bad job id');
-
-        const fetchOnce = async () => {
-          const res = await fetch(`/api/jobs/${id}`, { cache: 'no-store' });
-          if (!res.ok) {
-            const t = await res.text();
-            throw new Error(t || 'Failed to load job');
-          }
-          const data = await res.json();
-          if (!mounted) return;
-          setJob(data.job);
-          setImages(data.images || []);
-          setErr(null);
-
-          if (data.job?.status && !['succeeded', 'failed', 'canceled'].includes(data.job.status)) {
-            // ещё не финал — подождём и дернём ещё раз
-            setTimeout(fetchOnce, 2500);
-          }
-        };
-
-        await fetchOnce();
+        const res = await fetch(`/api/jobs/${id}`, { cache: 'no-store' });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data?.error || 'Failed');
+        setState(data);
       } catch (e: any) {
-        if (!mounted) return;
-        setErr(e.message || 'Load error');
+        setErr(e.message);
       } finally {
-        if (mounted) setLoading(false);
+        t = setTimeout(tick, 2500);
       }
-    })();
-    return () => {
-      mounted = false;
     };
-  }, [params]);
+    tick();
+    return () => clearTimeout(t);
+  }, [id]);
 
-  if (loading) return <main className="p-6"><h1 className="text-2xl font-bold">Задача: загрузка…</h1></main>;
+  if (err) return <div className="text-red-600">Ошибка: {err}</div>;
+  if (!state) return null;
 
-  if (err) {
-    return (
-      <main className="p-6 space-y-4">
-        <h1 className="text-2xl font-bold">Ошибка</h1>
-        <div className="text-red-600 whitespace-pre-wrap">{err}</div>
-        <a className="underline" href="/generate">← Вернуться к генерации</a>
-      </main>
-    );
-  }
-
-  if (!job) {
-    return (
-      <main className="p-6 space-y-4">
-        <h1 className="text-2xl font-bold">Задача не найдена</h1>
-        <a className="underline" href="/generate">← Вернуться к генерации</a>
-      </main>
-    );
-  }
-
+  const { job, images } = state;
   return (
-    <main className="p-6 space-y-6">
-      <h1 className="text-2xl font-bold">Job status: {job.status}</h1>
-      {job.error && <div className="text-red-600">Error: {job.error}</div>}
-
-      {images.length === 0 && job.status !== 'succeeded' && <div>Processing…</div>}
-
-      {images.length > 0 && (
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          {images.map((im, i) => (
-            <img key={i} src={im.url} alt={`out-${i}`} className="w-full h-auto rounded border" />
+    <div className="mt-4">
+      <h2 className="text-xl font-semibold">
+        Status: {job.status} {typeof job.done === 'number' && typeof job.total === 'number' ? `(${job.done}/${job.total})` : ''}
+      </h2>
+      {Array.isArray(images) && images.length > 0 ? (
+        <div className="grid grid-cols-2 md:grid-cols-3 gap-3 mt-4">
+          {images.map((img: any, i: number) => (
+            <img key={i} src={img.url} alt="" className="w-full h-auto rounded border" />
           ))}
         </div>
+      ) : (
+        <p className="text-sm text-gray-500 mt-2">Ещё нет изображений…</p>
       )}
-
-      <a className="underline" href="/generate">← Новая генерация</a>
-    </main>
+    </div>
   );
 }
 

@@ -1,9 +1,7 @@
+// app/api/health/route.ts
+import { NextResponse } from 'next/server';
 export const runtime = 'nodejs';
-export const dynamic = 'force-dynamic';
-export async function GET() {
-  return new Response(JSON.stringify({ ok: true, time: Date.now() }), {
-    status: 200,
-    headers: { 'content-type': 'application/json', 'cache-control': 'no-store' }
-  });
-}
 
+export async function GET() {
+  return NextResponse.json({ ok: true, route: '/api/health' });
+}

@@ -1,122 +1,131 @@
 // app/api/webhooks/replicate/route.ts
 import { NextResponse } from 'next/server';
-import { supabase } from '@/lib/supabaseServer';
+import crypto from 'crypto';
+import { db } from '@/lib/db';
+import { jobs, images } from '@/lib/schema';
+import { revalidateTag } from 'next/cache';
 
-export const runtime = 'nodejs';
-export const dynamic = 'force-dynamic';
+function constantTimeEqual(a: string, b: string) {
+  const bufA = Buffer.from(a, 'utf8');
+  const bufB = Buffer.from(b, 'utf8');
+  if (bufA.length !== bufB.length) return false;
+  return crypto.timingSafeEqual(bufA, bufB);
+}
 
-type ReplicatePayload = {
-  id?: string;
-  status?: string;
-  input?: { jobId?: string | null } | null;
-  output?: string[] | null;
-  error?: any;
-};
+// HMAC-SHA256(rawBody, secret). Replicate шлёт X-Replicate-Signature: sha256=<hex>
+// Поддержим и формат 't=...,s=...' на всякий случай.
+function verifyReplicateSignature(
+  rawBody: string,
+  signatureHeader: string | null,
+  secret?: string
+) {
+  if (!secret) return false;
+  if (!signatureHeader) return false;
 
-export async function GET() {
-  return NextResponse.json({ ok: true, mode: 'GET health' });
+  const header = signatureHeader.trim();
+  let provided = header;
+
+  // Вариант 't=...,s=...'
+  if (header.includes('s=')) {
+    const part = header.split(',').find((p) => p.trim().startsWith('s='));
+    if (part) provided = part.trim().slice(2);
+  }
+
+  // Вариант 'sha256=<hex>'
+  if (provided.startsWith('sha256=')) {
+    provided = provided.slice('sha256='.length);
+  }
+
+  const expected = crypto.createHmac('sha256', secret).update(rawBody).digest('hex');
+  return constantTimeEqual(provided, expected);
 }
 
 export async function POST(req: Request) {
-  try {
-    const payload = (await req.json().catch(() => ({}))) as ReplicatePayload;
+  // 1) читаем сырое тело ДО парсинга
+  const raw = await req.text();
 
-    if (!payload || Object.keys(payload).length === 0) {
-      return NextResponse.json({ ok: true, ping: true });
-    }
+  const sig =
+    req.headers.get('x-replicate-signature') ||
+    req.headers.get('replicate-signature') ||
+    req.headers.get('x-signature');
 
-    const predictionId = payload.id || null;
-    const status = payload.status || 'unknown';
-
-    // 1) Пытаемся взять jobId из input, иначе ищем по prediction_id
-    let jobId = payload.input?.jobId ?? null;
-    if (!jobId && predictionId) {
-      const { data, error } = await supabase
-        .from('jobs')
-        .select('id')
-        .eq('prediction_id', predictionId)
-        .maybeSingle();
-      if (error) {
-        return NextResponse.json(
-          { ok: false, step: 'find_by_prediction', error: error.message },
-          { status: 500 }
-        );
-      }
-      jobId = data?.id ?? null;
-    }
-
-    if (!jobId) {
-      return NextResponse.json(
-        { ok: false, step: 'missing_jobId', payload },
-        { status: 400 }
-      );
-    }
-
-    // 2) Промежуточные статусы
-    if (status !== 'succeeded' && status !== 'failed') {
-      const { error } = await supabase
-        .from('jobs')
-        .update({ status })
-        .eq('id', jobId);
-      if (error) {
-        return NextResponse.json(
-          { ok: false, step: 'update_intermediate', error: error.message },
-          { status: 500 }
-        );
-      }
-      return NextResponse.json({ ok: true, step: 'intermediate', jobId, status });
-    }
-
-    // 3) Success: сохраняем картинки
-    if (status === 'succeeded') {
-      const output = Array.isArray(payload.output) ? payload.output : [];
-      const rows = output.map((url) => ({ job_id: jobId!, url }));
-
-      if (rows.length) {
-        const { error } = await supabase.from('images').insert(rows);
-        if (error) {
-          return NextResponse.json(
-            { ok: false, step: 'insert_images', error: error.message },
-            { status: 500 }
-          );
-        }
-      }
-
-      const { error: updErr } = await supabase
-        .from('jobs')
-        .update({ status: 'succeeded', done: rows.length })
-        .eq('id', jobId);
-      if (updErr) {
-        return NextResponse.json(
-          { ok: false, step: 'final_update', error: updErr.message },
-          { status: 500 }
-        );
-      }
-
-      return NextResponse.json({ ok: true, step: 'done', jobId, saved: rows.length });
-    }
-
-    // 4) Failed
-    const errText =
-      typeof payload.error === 'string'
-        ? payload.error
-        : JSON.stringify(payload.error || {});
-    const { error: failErr } = await supabase
-      .from('jobs')
-      .update({ status: 'failed', error: errText })
-      .eq('id', jobId);
-    if (failErr) {
-      return NextResponse.json(
-        { ok: false, step: 'mark_failed', error: failErr.message },
-        { status: 500 }
-      );
-    }
-    return NextResponse.json({ ok: true, step: 'failed_saved', jobId });
-  } catch (e: any) {
-    return NextResponse.json(
-      { ok: false, step: 'handler_catch', error: e?.message || String(e) },
-      { status: 500 }
-    );
+  const ok = verifyReplicateSignature(raw, sig, process.env.REPLICATE_WEBHOOK_SECRET);
+  if (!ok) {
+    return NextResponse.json({ ok: false, error: 'invalid_signature' }, { status: 401 });
   }
+
+  // 2) теперь парсим JSON
+  let payload: any = null;
+  try {
+    payload = JSON.parse(raw);
+  } catch {
+    return NextResponse.json({ ok: false, error: 'bad_json' }, { status: 400 });
+  }
+
+  const predictionId: string | null = payload?.id ?? null;
+  const jobId: string | null = payload?.input?.jobId ?? null;
+  const status: string = String(payload?.status ?? 'processing').toLowerCase();
+  const out: string[] = Array.isArray(payload?.output) ? payload.output : [];
+
+  if (!jobId) {
+    return NextResponse.json({ ok: false, step: 'missing_jobId', payload }, { status: 400 });
+  }
+
+  // найдём job
+  const rows = await db.select().from(jobs).where(jobs.id.eq(jobId)).limit(1);
+  const job = rows?.[0];
+  if (!job) {
+    return NextResponse.json({ ok: false, step: 'job_not_found', jobId }, { status: 404 });
+  }
+  if (['succeeded', 'failed', 'canceled'].includes(job.status)) {
+    return NextResponse.json({ ok: true, step: 'already_terminal', jobId, status: job.status });
+  }
+
+  if (status === 'succeeded') {
+    const unique = Array.from(new Set(out.filter(Boolean)));
+    if (unique.length) {
+      await db
+        .insert(images)
+        .values(unique.map((url) => ({ jobId, url })))
+        .onConflictDoNothing(); // требует уникальный индекс (см. ниже)
+    }
+
+    await db
+      .update(jobs)
+      .set({
+        status: 'succeeded',
+        predictionId,
+        done: (job.done ?? 0) + (unique.length || 0),
+        processedAt: new Date(),
+      })
+      .where(jobs.id.eq(jobId));
+
+    try {
+      revalidateTag(`job:${jobId}`);
+    } catch {}
+
+    return NextResponse.json({ ok: true, step: 'done', jobId, saved: unique.length });
+  }
+
+  if (status === 'failed' || status === 'canceled') {
+    await db
+      .update(jobs)
+      .set({
+        status,
+        predictionId,
+        error: payload?.error ?? null,
+        processedAt: new Date(),
+      })
+      .where(jobs.id.eq(jobId));
+
+    try {
+      revalidateTag(`job:${jobId}`);
+    } catch {}
+    return NextResponse.json({ ok: true, step: 'terminal', jobId, status });
+  }
+
+  // промежуточные статусы
+  await db.update(jobs).set({ status, predictionId }).where(jobs.id.eq(jobId));
+  return NextResponse.json({ ok: true, step: 'progress', jobId, status });
 }
 
