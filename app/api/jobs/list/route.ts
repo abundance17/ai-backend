@@ -20,12 +20,8 @@ export async function GET(req: Request) {
       .order('created_at', { ascending: false })
       .limit(50);
 
-    if (jobsErr) {
-      return NextResponse.json({ ok: false, error: jobsErr.message }, { status: 500 });
-    }
-    if (!jobRows || jobRows.length === 0) {
-      return NextResponse.json({ ok: true, items: [] });
-    }
+    if (jobsErr) return NextResponse.json({ ok: false, error: jobsErr.message }, { status: 500 });
+    if (!jobRows?.length) return NextResponse.json({ ok: true, items: [] });
 
     const ids = jobRows.map(j => j.id);
     const { data: imgs, error: imgsErr } = await supabase
@@ -34,14 +30,10 @@ export async function GET(req: Request) {
       .in('job_id', ids)
       .order('created_at', { ascending: true });
 
-    if (imgsErr) {
-      return NextResponse.json({ ok: false, error: imgsErr.message }, { status: 500 });
-    }
+    if (imgsErr) return NextResponse.json({ ok: false, error: imgsErr.message }, { status: 500 });
 
     const firstByJob = new Map<string, string>();
-    (imgs || []).forEach(i => {
-      if (!firstByJob.has(i.job_id)) firstByJob.set(i.job_id, i.url);
-    });
+    (imgs || []).forEach(i => { if (!firstByJob.has(i.job_id)) firstByJob.set(i.job_id, i.url); });
 
     const items = jobRows.map(j => ({
       id: j.id,

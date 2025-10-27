@@ -6,9 +6,9 @@ import { createPrediction } from '@/lib/replicate';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-const RATE_WINDOW_MS = 3000; // 3 секунды
+const RATE_WINDOW_MS = 3000;
 
-// --- GET /api/jobs?userId=...  — список задач пользователя с краткой сводкой ---
+// --- GET /api/jobs?userId=... ---
 export async function GET(req: Request) {
   try {
     const { searchParams } = new URL(req.url);
@@ -24,12 +24,8 @@ export async function GET(req: Request) {
       .order('created_at', { ascending: false })
       .limit(50);
 
-    if (jobsErr) {
-      return NextResponse.json({ ok: false, error: jobsErr.message }, { status: 500 });
-    }
-    if (!jobRows || jobRows.length === 0) {
-      return NextResponse.json({ ok: true, items: [] });
-    }
+    if (jobsErr) return NextResponse.json({ ok: false, error: jobsErr.message }, { status: 500 });
+    if (!jobRows?.length) return NextResponse.json({ ok: true, items: [] });
 
     const ids = jobRows.map(j => j.id);
     const { data: imgs, error: imgsErr } = await supabase
@@ -38,14 +34,10 @@ export async function GET(req: Request) {
       .in('job_id', ids)
       .order('created_at', { ascending: true });
 
-    if (imgsErr) {
-      return NextResponse.json({ ok: false, error: imgsErr.message }, { status: 500 });
-    }
+    if (imgsErr) return NextResponse.json({ ok: false, error: imgsErr.message }, { status: 500 });
 
     const firstByJob = new Map<string, string>();
-    (imgs || []).forEach(i => {
-      if (!firstByJob.has(i.job_id)) firstByJob.set(i.job_id, i.url);
-    });
+    (imgs || []).forEach(i => { if (!firstByJob.has(i.job_id)) firstByJob.set(i.job_id, i.url); });
 
     const items = jobRows.map(j => ({
       id: j.id,
@@ -64,7 +56,7 @@ export async function GET(req: Request) {
   }
 }
 
-// --- POST /api/jobs  — создание задачи с rate-limit и подписанным вебхуком ---
+// --- POST /api/jobs ---
 export async function POST(req: Request) {
   try {
     const { userId, tier, prompt, negativePrompt, numOutputs = 8 } = await req.json();
@@ -72,7 +64,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Bad input' }, { status: 400 });
     }
 
-    // RATE LIMIT per user
+    // rate-limit: 3s
     const { data: lastJobs, error: lastErr } = await supabase
       .from('jobs')
       .select('id, created_at')
@@ -93,7 +85,7 @@ export async function POST(req: Request) {
       }
     }
 
-    // 1) создаём job в БД
+    // insert job
     const { data: job, error } = await supabase
       .from('jobs')
       .insert({
@@ -111,14 +103,13 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: error?.message || 'DB error' }, { status: 500 });
     }
 
-    // 2) стабильный webhook
+    // webhook URL
     const baseUrl =
       process.env.NEXT_PUBLIC_BASE_URL ||
       (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'http://localhost:3000');
-
     const webhook = `${baseUrl}/api/webhooks/replicate`;
 
-    // 3) prediction (передаём jobId!)
+    // create prediction (с jobId внутри input)
     const prediction = await createPrediction({
       tier: tier as 'fast' | 'standard' | 'pro',
       webhook,
