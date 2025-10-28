@@ -2,13 +2,12 @@
 import { NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabaseServer';
 
-export async function GET(req: Request) {
+export async function GET(
+  req: Request,
+  { params }: { params: { id: string } }
+) {
   try {
-    // Аккуратно вытаскиваем id из URL без второго аргумента
-    const url = new URL(req.url);
-    // Берём последний непустой сегмент пути: /api/jobs/<id>
-    const parts = url.pathname.split('/').filter(Boolean);
-    const id = parts[parts.length - 1];
+    const { id } = params;
 
     if (!id) {
       return NextResponse.json({ ok: false, error: 'Missing id' }, { status: 400 });
